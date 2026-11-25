@@ -1,0 +1,81 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Tether Action Group API",
+    "version": "1.0.0",
+    "description": "OpenAPI schema for Tether FinOps agent to audit and safely stop development EC2 instances."
+  },
+  "paths": {
+    "/audit-waste": {
+      "get": {
+        "summary": "Audit EC2 instances and classify cleanup eligibility",
+        "description": "Lists running or stopped EC2 instances along with tags and eligibility flags.",
+        "operationId": "auditWaste",
+        "responses": {
+          "200": {
+            "description": "Inventory of EC2 instances",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "resources": { "type": "array" },
+                    "eligible_count": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stop-dev-instances": {
+      "post": {
+        "summary": "Safely stop up to 3 development EC2 instances",
+        "description": "Stops non-protected EC2 instances tagged Environment=Development or Owner=DevSandbox. Rejects batch sizes over 3.",
+        "operationId": "stopDevInstances",
+        "parameters": [
+          {
+            "name": "instance_ids",
+            "in": "query",
+            "required": true,
+            "description": "JSON array or comma-separated list of up to 3 development EC2 instance IDs",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "confirmation_token",
+            "in": "query",
+            "required": false,
+            "description": "Optional administrative confirmation token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Instances successfully stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "action": { "type": "string" },
+                    "instances": { "type": "array" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Boundary violation or invalid parameters"
+          }
+        }
+      }
+    }
+  }
+}
