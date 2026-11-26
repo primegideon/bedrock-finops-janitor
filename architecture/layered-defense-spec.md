@@ -13,33 +13,6 @@ The system runs on AWS in region `us-east-1` using the **Amazon Bedrock AgentCor
 
 *(Static exports: [PNG](tether-architecture.png) · [SVG](tether-architecture.svg))*
 
-```mermaid
-flowchart TD
-    User([User or External System]) -->|Input| L1Hook[Layer 1: beforeInvocation Hook -> Bedrock Guardrail]
-    
-    subgraph Guardrail_Checks [Guardrail Defense]
-        L1Hook -->|Blocked| BlockResponse[Refusal: hook_stopped]
-        L1Hook -->|Allowed| Harness[Layer 2: AgentCore Managed Harness]
-    end
-
-    subgraph Agent_Core [Agent Reasoning and Lifecycle Hooks]
-        Harness -->|System Prompt + Schema| Reasoning{Evaluate Tag and Action}
-        Reasoning -->|Boundary Breach| AgentRefusal[Refusal in Response]
-        Reasoning -->|Tool Request| ToolHook[beforeToolCall Hook: Allowlist / Mode / Count]
-        ToolHook -->|Denied| HookDeny[Denied before Gateway]
-        ToolHook -->|Allowed| GW[AgentCore MCP Gateway]
-    end
-
-    subgraph Physical_AWS_Layer [Layer 3: Lambda and IAM Boundaries]
-        GW -->|Invoke| Lambda[Tether-Action-Handler Lambda]
-        Lambda -->|Count Check| RadiusCheck{Count <= 3?}
-        RadiusCheck -->|No| Reject400[Error: BLAST_RADIUS_EXCEEDED]
-        RadiusCheck -->|Yes| IAMCheck[AWS IAM Evaluation]
-        IAMCheck -->|Explicit Deny: Terminate| AWSDeny[AWS API Denied]
-        IAMCheck -->|Tag Condition: Development| AWSOK[ec2:StopInstances Executed]
-    end
-```
-
 ---
 
 ## Layer Specifications
