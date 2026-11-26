@@ -8,12 +8,18 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
-HANDLER_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "lambda", "action_handler.py")
-)
-SPEC = importlib.util.spec_from_file_location("action_handler", HANDLER_PATH)
-action_handler = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(action_handler)
+def _load_lambda_module(name: str, filename: str):
+    path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "lambda", filename)
+    )
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+action_handler = _load_lambda_module("action_handler", "action_handler.py")
+hook_handler = _load_lambda_module("hook_handler", "hook_handler.py")
 
 
 class TestLayer3Boundaries(unittest.TestCase):
@@ -156,6 +162,70 @@ class TestLayer3Boundaries(unittest.TestCase):
         self.assertIsNone(by_id["i-stopped-dev"]["avg_cpu_percent"])
         self.assertFalse(by_id["i-idle-prod"]["eligible_for_stop"])
         fake_cw.get_metric_data.assert_called_once()
+
+
+class TestLayer2HookBoundaries(unittest.TestCase):
+    def test_allows_valid_audit_and_dev_stop_within_radius(self):
+        audit_resp = hook_handler.lambda_handler(
+            {
+                "event": "before_tool_call",
+                "context": {"toolName": "Tether-Action-Target___audit_waste", "toolInput": {}},
+            },
+            None,
+        )
+        self.assertEqual(audit_resp["decision"], "allow")
+
+        stop_resp = hook_handler.lambda_handler(
+            {
+                "event": "before_tool_call",
+                "context": {
+                    "toolName": "Tether-Action-Target___stop_dev_instances",
+                    "toolInput": {
+                        "instance_ids": ["i-1", "i-2", "i-3"],
+                        "mode": "stop",
+                    },
+                },
+            },
+            None,
+        )
+        self.assertEqual(stop_resp["decision"], "allow")
+
+    def test_denies_unlisted_tools(self):
+        for tool in ("shell", "subagent", "terminate_instances"):
+            resp = hook_handler.lambda_handler(
+                {"event": "before_tool_call", "context": {"toolName": tool, "toolInput": {}}},
+                None,
+            )
+            self.assertEqual(resp["decision"], "deny")
+            self.assertIn("allowlist", resp["reason"])
+
+    def test_denies_non_stop_mode(self):
+        resp = hook_handler.lambda_handler(
+            {
+                "event": "before_tool_call",
+                "context": {
+                    "toolName": "Tether-Action-Target___stop_dev_instances",
+                    "toolInput": {"instance_ids": ["i-1"], "mode": "terminate"},
+                },
+            },
+            None,
+        )
+        self.assertEqual(resp["decision"], "deny")
+        self.assertIn("terminate", resp["reason"])
+
+    def test_denies_blast_radius_exceeded(self):
+        resp = hook_handler.lambda_handler(
+            {
+                "event": "before_tool_call",
+                "context": {
+                    "toolName": "Tether-Action-Target___stop_dev_instances",
+                    "toolInput": {"instance_ids": ["i-1", "i-2", "i-3", "i-4"]},
+                },
+            },
+            None,
+        )
+        self.assertEqual(resp["decision"], "deny")
+        self.assertIn("Blast-radius", resp["reason"])
 
 
 if __name__ == "__main__":

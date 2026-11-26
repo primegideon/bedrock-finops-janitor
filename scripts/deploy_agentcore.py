@@ -23,6 +23,7 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT_DIR)
 
 from agent.aws_config import (  # noqa: E402
+    DEFAULT_HOOK_LAMBDA_NAME,
     DEFAULT_LAMBDA_NAME,
     get_account_id,
     get_aws_region,
@@ -32,7 +33,7 @@ from agent.aws_config import (  # noqa: E402
 )
 
 HOOK_ROLE_NAME = "Tether-Hook-Execution-Role"
-HOOK_LAMBDA_NAME = "Tether-AgentCore-Hooks"
+HOOK_LAMBDA_NAME = DEFAULT_HOOK_LAMBDA_NAME
 AGENTCORE_ROLE_NAME = "Tether-AgentCore-Execution-Role"
 GATEWAY_NAME = "Tether-FinOps-Gateway"
 TARGET_NAME = "Tether-Action-Target"
