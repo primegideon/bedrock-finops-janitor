@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import unittest
+from unittest.mock import MagicMock, patch
 
 HANDLER_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "lambda", "action_handler.py")
@@ -81,6 +82,80 @@ class TestLayer3Boundaries(unittest.TestCase):
         self.assertEqual(resp["response"]["httpStatusCode"], 400)
         body = json.loads(resp["response"]["responseBody"]["application/json"]["body"])
         self.assertEqual(body["code"], "ENVIRONMENT_BOUNDARY_VIOLATION")
+
+    def test_live_audit_requires_low_cpu_and_running_state(self):
+        os.environ["MOCK_MODE"] = "false"
+        fake_ec2 = MagicMock()
+        fake_paginator = MagicMock()
+        fake_paginator.paginate.return_value = [
+            {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {
+                                "InstanceId": "i-idle-dev",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {"Key": "Environment", "Value": "Development"},
+                                    {"Key": "Name", "Value": "idle-box"},
+                                ],
+                            },
+                            {
+                                "InstanceId": "i-busy-dev",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {"Key": "Environment", "Value": "Development"},
+                                    {"Key": "Name", "Value": "busy-box"},
+                                ],
+                            },
+                            {
+                                "InstanceId": "i-stopped-dev",
+                                "State": {"Name": "stopped"},
+                                "Tags": [
+                                    {"Key": "Environment", "Value": "Development"},
+                                    {"Key": "Name", "Value": "stopped-box"},
+                                ],
+                            },
+                            {
+                                "InstanceId": "i-idle-prod",
+                                "State": {"Name": "running"},
+                                "Tags": [
+                                    {"Key": "Environment", "Value": "Production"},
+                                    {"Key": "Name", "Value": "prod-box"},
+                                ],
+                            },
+                        ]
+                    }
+                ]
+            }
+        ]
+        fake_ec2.get_paginator.return_value = fake_paginator
+
+        fake_cw = MagicMock()
+        fake_cw.get_metric_data.return_value = {
+            "MetricDataResults": [
+                {"Id": "cpu_0", "Values": [1.2, 2.4]},
+                {"Id": "cpu_1", "Values": [42.0, 55.0]},
+            ]
+        }
+
+        with (
+            patch.object(action_handler, "_get_ec2_client", return_value=fake_ec2),
+            patch.object(action_handler, "_get_cloudwatch_client", return_value=fake_cw),
+        ):
+            res = action_handler.audit_waste()
+
+        self.assertEqual(res["mode"], "live")
+        self.assertEqual(res["eligible_count"], 1)
+        by_id = {item["id"]: item for item in res["resources"]}
+        self.assertTrue(by_id["i-idle-dev"]["eligible_for_stop"])
+        self.assertEqual(by_id["i-idle-dev"]["avg_cpu_percent"], 1.8)
+        self.assertFalse(by_id["i-busy-dev"]["eligible_for_stop"])
+        self.assertEqual(by_id["i-busy-dev"]["avg_cpu_percent"], 48.5)
+        self.assertFalse(by_id["i-stopped-dev"]["eligible_for_stop"])
+        self.assertIsNone(by_id["i-stopped-dev"]["avg_cpu_percent"])
+        self.assertFalse(by_id["i-idle-prod"]["eligible_for_stop"])
+        fake_cw.get_metric_data.assert_called_once()
 
 
 if __name__ == "__main__":

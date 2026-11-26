@@ -12,7 +12,7 @@ import boto3
 
 DEFAULT_REGION = "us-east-1"
 DEFAULT_GUARDRAIL_NAME = "Tether-Safety-Guardrail"
-DEFAULT_GUARDRAIL_VERSION = "2"
+DEFAULT_GUARDRAIL_VERSION = "1"
 DEFAULT_LAMBDA_NAME = "Tether-Action-Handler"
 DEFAULT_LAMBDA_ROLE_NAME = "Tether-Lambda-Execution-Role"
 DEFAULT_HARNESS_NAME = "Tether_Managed_Harness"
@@ -57,6 +57,29 @@ def resolve_guardrail_id(
         f"Guardrail '{guardrail_name}' not found in region {get_aws_region()}. "
         "Run scripts/deploy_bedrock_agent.py first or set TETHER_GUARDRAIL_ID."
     )
+
+
+def resolve_guardrail_version(
+    session: boto3.Session,
+    guardrail_id: str,
+) -> str:
+    """Resolve latest published Guardrail version via TETHER_GUARDRAIL_VERSION or Bedrock."""
+    env_ver = os.environ.get("TETHER_GUARDRAIL_VERSION")
+    if env_ver:
+        return env_ver
+
+    bedrock = session.client("bedrock")
+    versions = []
+    paginator = bedrock.get_paginator("list_guardrails")
+    for page in paginator.paginate(guardrailIdentifier=guardrail_id):
+        for item in page.get("guardrails", []):
+            ver = str(item.get("version", ""))
+            if ver.isdigit():
+                versions.append(int(ver))
+
+    if versions:
+        return str(max(versions))
+    return DEFAULT_GUARDRAIL_VERSION
 
 
 def resolve_harness_arn(

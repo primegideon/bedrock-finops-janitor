@@ -10,12 +10,15 @@ Supports:
 
 import json
 import os
-from typing import Any, Dict, List
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError
 
 MAX_BLAST_RADIUS = 3
+IDLE_CPU_THRESHOLD = 5.0
+IDLE_LOOKBACK_HOURS = 24
 ALLOWED_ENV_TAG = "Development"
 ALLOWED_OWNER_TAG = "DevSandbox"
 FORBIDDEN_ENV_TAGS = {"Production", "Staging", "Prod"}
@@ -77,6 +80,59 @@ def _get_ec2_client():
     return boto3.client("ec2", region_name=region)
 
 
+def _get_cloudwatch_client():
+    if _is_mock_mode():
+        return None
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    return boto3.client("cloudwatch", region_name=region)
+
+
+def _fetch_avg_cpu_by_instance(
+    cw_client, instance_ids: List[str]
+) -> Dict[str, Optional[float]]:
+    """Return 24-hour average CPUUtilization per running instance via CloudWatch."""
+    if cw_client is None or not instance_ids:
+        return {}
+
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(hours=IDLE_LOOKBACK_HOURS)
+    queries = [
+        {
+            "Id": f"cpu_{idx}",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": "AWS/EC2",
+                    "MetricName": "CPUUtilization",
+                    "Dimensions": [{"Name": "InstanceId", "Value": inst_id}],
+                },
+                "Period": 3600,
+                "Stat": "Average",
+            },
+            "ReturnData": True,
+        }
+        for idx, inst_id in enumerate(instance_ids)
+    ]
+
+    averages: Dict[str, Optional[float]] = {inst_id: None for inst_id in instance_ids}
+    try:
+        resp = cw_client.get_metric_data(
+            MetricDataQueries=queries,
+            StartTime=start_time,
+            EndTime=end_time,
+        )
+    except ClientError:
+        return averages
+
+    id_by_query = {f"cpu_{idx}": inst_id for idx, inst_id in enumerate(instance_ids)}
+    for result in resp.get("MetricDataResults", []):
+        inst_id = id_by_query.get(result.get("Id", ""))
+        values = result.get("Values") or []
+        if inst_id and values:
+            averages[inst_id] = round(sum(values) / len(values), 2)
+
+    return averages
+
+
 def _is_eligible_dev_tags(tags: Dict[str, str]) -> bool:
     """Return True only when tags explicitly mark a non-protected dev resource."""
     if tags.get("Protected", "").lower() == "true":
@@ -113,21 +169,40 @@ def audit_waste() -> Dict[str, Any]:
         }
 
     paginator = ec2.get_paginator("describe_instances")
-    resources = []
+    raw_instances = []
+    candidate_ids = []
     for page in paginator.paginate(
         Filters=[{"Name": "instance-state-name", "Values": ["running", "stopped"]}]
     ):
         for reservation in page.get("Reservations", []):
             for inst in reservation.get("Instances", []):
                 tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
-                resources.append({
-                    "id": inst["InstanceId"],
-                    "name": tags.get("Name", "Unnamed"),
-                    "environment": tags.get("Environment", "Untagged"),
-                    "owner": tags.get("Owner", "Unknown"),
-                    "state": inst["State"]["Name"],
-                    "eligible_for_stop": _is_eligible_dev_tags(tags),
-                })
+                state = inst["State"]["Name"]
+                tag_ok = _is_eligible_dev_tags(tags)
+                if tag_ok and state == "running":
+                    candidate_ids.append(inst["InstanceId"])
+                raw_instances.append((inst, tags, state, tag_ok))
+
+    cpu_by_id = _fetch_avg_cpu_by_instance(_get_cloudwatch_client(), candidate_ids)
+    resources = []
+    for inst, tags, state, tag_ok in raw_instances:
+        inst_id = inst["InstanceId"]
+        avg_cpu = cpu_by_id.get(inst_id)
+        eligible = (
+            tag_ok
+            and state == "running"
+            and avg_cpu is not None
+            and avg_cpu < IDLE_CPU_THRESHOLD
+        )
+        resources.append({
+            "id": inst_id,
+            "name": tags.get("Name", "Unnamed"),
+            "environment": tags.get("Environment", "Untagged"),
+            "owner": tags.get("Owner", "Unknown"),
+            "state": state,
+            "avg_cpu_percent": avg_cpu,
+            "eligible_for_stop": eligible,
+        })
 
     return {
         "status": "success",

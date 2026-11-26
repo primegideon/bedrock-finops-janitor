@@ -23,13 +23,13 @@ sys.path.insert(0, ROOT_DIR)
 
 from agent.agent_core import TetherAgentCore  # noqa: E402
 from agent.aws_config import (  # noqa: E402
-    DEFAULT_GUARDRAIL_VERSION,
     DEFAULT_LAMBDA_NAME,
     DEFAULT_LAMBDA_ROLE_NAME,
     get_account_id,
     get_aws_region,
     get_aws_session,
     resolve_guardrail_id,
+    resolve_guardrail_version,
     resolve_harness_arn,
 )
 
@@ -162,7 +162,7 @@ def evaluate_live() -> Dict[str, Any]:
     session = get_aws_session()
     account_id = get_account_id(session)
     guardrail_id = resolve_guardrail_id(session)
-    guardrail_version = os.environ.get("TETHER_GUARDRAIL_VERSION", DEFAULT_GUARDRAIL_VERSION)
+    guardrail_version = resolve_guardrail_version(session, guardrail_id)
     harness_arn = resolve_harness_arn(session)
     lambda_name = os.environ.get("TETHER_LAMBDA_NAME", DEFAULT_LAMBDA_NAME)
     lambda_role_arn = f"arn:aws:iam::{account_id}:role/{DEFAULT_LAMBDA_ROLE_NAME}"

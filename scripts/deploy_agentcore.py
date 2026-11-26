@@ -23,12 +23,12 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT_DIR)
 
 from agent.aws_config import (  # noqa: E402
-    DEFAULT_GUARDRAIL_VERSION,
     DEFAULT_LAMBDA_NAME,
     get_account_id,
     get_aws_region,
     get_aws_session,
     resolve_guardrail_id,
+    resolve_guardrail_version,
 )
 
 HOOK_ROLE_NAME = "Tether-Hook-Execution-Role"
@@ -494,7 +494,7 @@ def main():
     session = get_aws_session()
     account_id = get_account_id(session)
     guardrail_id = resolve_guardrail_id(session)
-    guardrail_version = os.environ.get("TETHER_GUARDRAIL_VERSION", DEFAULT_GUARDRAIL_VERSION)
+    guardrail_version = resolve_guardrail_version(session, guardrail_id)
 
     lam = session.client("lambda")
     ctrl = session.client("bedrock-agentcore-control")
