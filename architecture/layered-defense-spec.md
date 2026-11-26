@@ -1,33 +1,35 @@
 # Technical Architecture and Layered Defense Specification
 
 Technical design and boundary enforcement model for Tether.
-Reference: Issue #1 (https://github.com/primegideon/bedrock-finops-janitor/issues/1)
+Reference: Issue #1 (https://github.com/primegideon/tether/issues/1)
 
 ---
 
 ## Architecture Overview
 
-The system runs on AWS in region `us-east-1` using Amazon Bedrock Managed Agents:
+The system runs on AWS in region `us-east-1` using the **Amazon Bedrock AgentCore Managed Harness** (`Tether_Managed_Harness`):
 
 ```mermaid
 flowchart TD
-    User([User or External System]) -->|Input| BG[Layer 1: Amazon Bedrock Guardrail]
+    User([User or External System]) -->|Input| L1Hook[Layer 1: beforeInvocation Hook -> Bedrock Guardrail]
     
     subgraph Guardrail_Checks [Guardrail Defense]
-        BG -->|Blocked| BlockResponse[Refusal: Policy Violation]
-        BG -->|Allowed| BMA[Layer 2: Bedrock Managed Agent]
+        L1Hook -->|Blocked| BlockResponse[Refusal: hook_stopped]
+        L1Hook -->|Allowed| Harness[Layer 2: AgentCore Managed Harness]
     end
 
-    subgraph Agent_Core [Agent Reasoning and Tool Routing]
-        BMA -->|LLM: Claude 3.5 Sonnet or Nova| Reasoning{Evaluate Tag and Action}
+    subgraph Agent_Core [Agent Reasoning and Lifecycle Hooks]
+        Harness -->|System Prompt + Schema| Reasoning{Evaluate Tag and Action}
         Reasoning -->|Boundary Breach| AgentRefusal[Refusal in Response]
-        Reasoning -->|Valid Action| AG[Bedrock Action Group: OpenAPI 3.0]
+        Reasoning -->|Tool Request| ToolHook[beforeToolCall Hook: Allowlist / Mode / Count]
+        ToolHook -->|Denied| HookDeny[Denied before Gateway]
+        ToolHook -->|Allowed| GW[AgentCore MCP Gateway]
     end
 
     subgraph Physical_AWS_Layer [Layer 3: Lambda and IAM Boundaries]
-        AG -->|Invoke| Lambda[Action Handler Lambda]
+        GW -->|Invoke| Lambda[Tether-Action-Handler Lambda]
         Lambda -->|Count Check| RadiusCheck{Count <= 3?}
-        RadiusCheck -->|No| Reject400[HTTP 400: Blast Radius Exceeded]
+        RadiusCheck -->|No| Reject400[Error: BLAST_RADIUS_EXCEEDED]
         RadiusCheck -->|Yes| IAMCheck[AWS IAM Evaluation]
         IAMCheck -->|Explicit Deny: Terminate| AWSDeny[AWS API Denied]
         IAMCheck -->|Tag Condition: Development| AWSOK[ec2:StopInstances Executed]
@@ -38,25 +40,23 @@ flowchart TD
 
 ## Layer Specifications
 
-### 1. Layer 1: Amazon Bedrock Guardrail
-- Configuration Name: `Tether-Safety-Guardrail`
+### 1. Layer 1: Amazon Bedrock Guardrail (`before_invocation` and `after_invocation` Hooks)
+- Configuration Name: `Tether-Safety-Guardrail` (v2)
 - Filters:
-  - Content Filter: High threshold on standard harmful content categories.
-  - Prompt Attack Filter: Active inspection for prompt injection, jailbreaks, and prompt overrides.
-  - Denied Topics:
-    - Destructive Cloud Actions: Requests to terminate instances, delete storage volumes, or drop databases.
-    - Privilege Escalation: Requests to assume administrative or root privileges.
+  - Content Filters: `PROMPT_ATTACK` (`HIGH` input), `HATE`, `INSULTS`, `MISCONDUCT` (`HIGH` input/output).
+  - Denied Topic:
+    - `PrivilegeEscalationAndBypass`: Requests attempting to override instructions, claim root/admin authority, or bypass IAM boundaries.
   - Sensitive Data Redaction:
-    - Regex patterns for AWS Access Key IDs, Secret Keys, and internal network addresses.
+    - Regex pattern for AWS Access Key IDs (`AWSAccessKeyId`, action `BLOCK`).
 
-### 2. Layer 2: Bedrock Managed Agent
-- Model: Anthropic Claude 3.5 Sonnet or Amazon Nova Pro.
-- System Prompt:
-  - Defines the operational role strictly as an automated FinOps Auditor.
-  - Enforces mandatory verification of the `Environment` tag before generating tool input.
-- Tool Interface (OpenAPI 3.0):
-  - `GET /audit-waste`: Read-only discovery.
-  - `POST /stop-dev-instances`: Typed schema with `instance_ids` (List of strings) and optional `confirmation_token`.
+### 2. Layer 2: Amazon Bedrock AgentCore Managed Harness & `before_tool_call` Hook
+- Runtime: `Tether_Managed_Harness` using `gemini-3.5-flash-lite` via AgentCore Identity (`tether-gemini-key`), integrated with `Tether-FinOps-Gateway` (MCP).
+- Lifecycle Hook (`lambda/hook_handler.py`):
+  - Enforces tool allowlist (`audit_waste`, `stop_dev_instances` only — blocks unexpected harness tools like `shell` or `subagent`).
+  - Rejects any `mode != 'stop'` and rejects batches exceeding 3 instance IDs before tool execution.
+- System Prompt (`agent/system_prompt.txt`) & Schema (`lambda/openapi_schema.json`):
+  - `GET /audit-waste` (`audit_waste`): Read-only discovery.
+  - `POST /stop-dev-instances` (`stop_dev_instances`): Typed schema with `instance_ids` (List of strings).
   - No delete or terminate endpoints are defined.
 
 ### 3. Layer 3: IAM Physical Boundary Policy

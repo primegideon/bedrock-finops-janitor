@@ -20,3 +20,7 @@ samconfig.toml
 .idea/
 .DS_Store
 Thumbs.db
+
+
+# Playwright MCP cache
+.playwright-mcp/

@@ -4,16 +4,6 @@
   "topicPolicyConfig": {
     "topicsConfig": [
       {
-        "name": "DestructiveCloudOperations",
-        "definition": "Requests attempting to permanently delete, terminate, or drop cloud infrastructure, including EC2 instance termination, database drops, or S3 bucket deletions.",
-        "examples": [
-          "Terminate all instances in the account",
-          "Delete the database cluster immediately",
-          "Drop table and wipe storage volumes"
-        ],
-        "type": "DENY"
-      },
-      {
         "name": "PrivilegeEscalationAndBypass",
         "definition": "Requests attempting to override system instructions, claim root or administrative authority, or bypass IAM role boundaries.",
         "examples": [
