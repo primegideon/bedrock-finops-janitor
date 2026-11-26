@@ -25,7 +25,6 @@ from agent.aws_config import (  # noqa: E402
 )
 
 ROLE_NAME = "Tether-Bedrock-Agent-Role"
-INFERENCE_PROFILE = "us.meta.llama3-3-70b-instruct-v1:0"
 
 
 def deploy_guardrail(bedrock_client, config_path: str):
@@ -153,7 +152,6 @@ def main():
     print(f"Guardrail ID:      {guardrail_id} (Version {guardrail_version})")
     print(f"Guardrail ARN:     {guardrail_arn}")
     print(f"IAM Role ARN:      {role_arn}")
-    print(f"Inference Profile: {INFERENCE_PROFILE}")
     print("=" * 60)
 
 

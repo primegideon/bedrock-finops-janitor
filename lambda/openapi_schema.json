@@ -46,12 +46,13 @@
             }
           },
           {
-            "name": "confirmation_token",
+            "name": "mode",
             "in": "query",
             "required": false,
-            "description": "Optional administrative confirmation token",
+            "description": "Action mode (must be 'stop')",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": ["stop"]
             }
           }
         ],
