@@ -24,6 +24,7 @@ Tether performs **one defined job**: audit idle AWS development resources and sa
 2. **Layer 2 (Amazon Bedrock AgentCore Managed Harness):** Enforces single-purpose FinOps reasoning via `agent/system_prompt.txt`, typed tool schemas, and a `before_tool_call` lifecycle hook that validates tool allowlist, action mode, and blast-radius cap.
 3. **Layer 3 (AWS Lambda & Scoped IAM):** Enforces deterministic runtime and IAM API constraints:
    - Blast-radius cap of 3 instances per execution in `lambda/action_handler.py`.
+   - 24-hour CloudWatch `CPUUtilization` idle verification (`< 5.0%`) on running dev instances.
    - Tag condition (`aws:ResourceTag/Environment = Development` or `Owner = DevSandbox`).
    - Explicit IAM `Deny` on `ec2:TerminateInstances`, `ec2:DeleteVolume`, `rds:DeleteDBInstance`, `rds:DeleteDBCluster`, and `s3:DeleteBucket`.
 
@@ -55,7 +56,7 @@ tether/
 ├── tests/
 │   ├── STRESS_TEST_REPORT.md       # Captured live AWS test outputs
 │   ├── stress_test.py              # 6-scenario adversarial test suite
-│   └── test_boundaries.py          # Automated Layer 3 unit tests
+│   └── test_boundaries.py          # Automated Layer 2 hook and Layer 3 unit tests
 ├── LICENSE                         # MIT License
 └── RULES.md                        # Official boundary specification
 ```

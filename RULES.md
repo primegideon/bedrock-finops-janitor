@@ -17,9 +17,9 @@ The agent operates under non-negotiable boundaries to prevent accidental modific
 ## 2. Rule Set
 
 ### Rule 1: Permitted Read Scope (Allowed Operations)
-- Allowed: Query metadata for EC2 instances, EBS volumes, and CloudWatch metrics within the target AWS account.
-- Purpose: Identify idle development resources and report cleanup eligibility.
-- Output: Structured reports listing instance IDs, environment tags, states, and eligibility flags.
+- Allowed: Query EC2 instance state and tags (`ec2:DescribeInstances`) and 24-hour CloudWatch `CPUUtilization` metrics (`cloudwatch:GetMetricData`) within the target AWS account.
+- Purpose: Identify running development resources that are idle (`avg_cpu_percent < 5.0%`) and report cleanup eligibility.
+- Output: Structured reports listing instance IDs, environment tags, states, average CPU, and eligibility flags.
 
 ### Rule 2: Environment Isolation (Forbidden Targets)
 - Requirement: The agent may only modify resources that carry the tag `Environment=Development` or `Owner=DevSandbox`.
@@ -67,6 +67,7 @@ Tether deploys directly on the **Amazon Bedrock AgentCore Managed Harness** (`Te
       |
       v (Validated tool calls only)
 [ Layer 3: AWS Lambda (Tether-Action-Handler) & Scoped IAM Role ]
+  - Verifies running state and 24h CloudWatch CPUUtilization < 5.0% during audits.
   - Re-validates blast radius (<= 3) and resource Environment/Owner tags via EC2 DescribeInstances.
   - IAM Policy Condition: aws:ResourceTag/Environment = Development (or Owner = DevSandbox).
   - IAM Explicit Deny: ec2:TerminateInstances, ec2:DeleteVolume, rds:Delete*, Protected=True.

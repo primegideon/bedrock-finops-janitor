@@ -59,8 +59,8 @@ flowchart TD
   - `POST /stop-dev-instances` (`stop_dev_instances`): Typed schema with `instance_ids` (List of strings).
   - No delete or terminate endpoints are defined.
 
-### 3. Layer 3: IAM Physical Boundary Policy
-The Lambda execution role policy implements deterministic constraints independent of model output:
+### 3. Layer 3: Lambda Runtime & IAM Physical Boundary Policy
+The action handler (`lambda/action_handler.py`) checks EC2 `running` state, 24-hour average CloudWatch `CPUUtilization < 5.0%`, `mode == 'stop'`, `len(instance_ids) <= 3`, and `Development`/`DevSandbox` tags before calling `ec2:StopInstances`. The Lambda execution role policy enforces deterministic IAM boundaries independent of model output:
 
 ```json
 {

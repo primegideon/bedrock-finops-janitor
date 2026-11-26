@@ -15,7 +15,7 @@ In cloud operations, giving an autonomous agent write access to an AWS account c
 
 ## 2. Plain-Language Rule Set
 
-1. **Permitted Read Scope:** Tether may list and inspect EC2 instances, EBS volumes, and utilization metadata across the target AWS account to identify idle development candidates.
+1. **Permitted Read Scope:** Tether may inspect EC2 instance state, resource tags, and 24-hour CloudWatch `CPUUtilization` metrics across the target AWS account to identify idle running development candidates (`< 5.0%` average CPU).
 2. **Strict Environment Isolation:** Tether may only stop resources explicitly tagged `Environment=Development` or `Owner=DevSandbox`. Any resource tagged `Environment=Production`, `Environment=Staging`, `Protected=True`, or missing an `Environment` tag is strictly off-limits.
 3. **Zero Destructive Actions:** Tether may only invoke `ec2:StopInstances`. It must permanently refuse any request to terminate instances (`ec2:TerminateInstances`), delete EBS volumes (`ec2:DeleteVolume`), or drop databases (`rds:DeleteDB*`).
 4. **Blast-Radius & Edge-Case Controls:** Tether cannot modify more than **3 resources** in a single execution. If more than 3 candidates exist, it outputs the full inventory and blocks execution pending explicit human approval. Partial API failures abort remaining operations immediately.
@@ -52,7 +52,7 @@ Tether never relies on system prompt instructions alone. Every rule is enforced 
 +-------------------------------------------------------------------+
 | Layer 3: AWS Lambda & Scoped IAM (Tether-Action-Handler)          |
 |   - Runtime check: len(instance_ids) <= 3, mode == 'stop'         |
-|   - Runtime tag pre-check before calling EC2 API                  |
+|   - CloudWatch 24h CPU (< 5%) idle check + runtime tag pre-check    |
 |   - IAM Condition: aws:ResourceTag/Environment = Development      |
 |   - IAM Explicit Deny: ec2:TerminateInstances, rds:Delete*, etc.  |
 +-------------------------------------------------------------------+
@@ -76,7 +76,7 @@ The Managed Harness invokes `Tether-AgentCore-Hooks` (AWS Lambda) at three lifec
 
 ## 4. Build Process, Failures Encountered, and Resolutions
 
-Deploying and verifying Tether live against AWS `us-east-1` surfaced five engineering issues that shaped the final architecture:
+Deploying and verifying Tether live against AWS `us-east-1` surfaced six engineering issues that shaped the final architecture:
 
 ### Issue 1: Bedrock Agents Classic Maintenance Mode (`AccessDeniedException`)
 * **What Broke:** Initial provisioning via `bedrock-agent create_agent` failed with: *"Bedrock Agents is in Maintenance Mode. New agent creation is not available for accounts without prior service usage."*
@@ -95,8 +95,12 @@ Deploying and verifying Tether live against AWS `us-east-1` surfaced five engine
 * **Resolution:** Added fallback key resolution in `lambda/hook_handler.py` (`event.get("event") or event.get("hookType")`, `context_data.get("toolName") or context_data.get("name")`) and verified live hook events end-to-end, confirming `before_tool_call` deterministically denies non-allowlisted built-in harness tools such as `shell` and `subagent`.
 
 ### Issue 5: Repository Portability Audit
-* **What Broke:** A pre-submission audit flagged hardcoded AWS CLI profile names and account IDs inside runtime scripts and generated reports.
-* **Resolution:** Extracted a shared configuration module (`agent/aws_config.py`) using standard `AWS_PROFILE` / `AWS_REGION` resolution, STS `get_caller_identity()`, dynamic Guardrail/Harness discovery by name, and automatic account-ID redaction in `tests/STRESS_TEST_REPORT.md`.
+* **What Broke:** A pre-submission audit flagged hardcoded AWS CLI profile names, static Guardrail version strings, and account IDs inside runtime scripts and generated reports.
+* **Resolution:** Extracted a shared configuration module (`agent/aws_config.py`) using standard `AWS_PROFILE` / `AWS_REGION` resolution, STS `get_caller_identity()`, dynamic Guardrail ID/version and Harness ARN discovery, and automatic account-ID redaction in `tests/STRESS_TEST_REPORT.md`.
+
+### Issue 6: Live Idle Detection & Honest Boundary Verification
+* **What Broke:** Initial live `audit_waste()` checked tags and state without checking CloudWatch utilization, and live stress tests only showed `before_tool_call` enforcement when the LLM happened to attempt a tool, while non-existent mock EC2 IDs errored on `DescribeInstances` before tag checks.
+* **Resolution:** Added batched 24-hour CloudWatch `CPUUtilization` (`< 5.0%`) verification on running dev instances in `lambda/action_handler.py`, added `TestLayer2HookBoundaries` unit tests in `tests/test_boundaries.py`, and updated `tests/stress_test.py --live` to probe `Tether-AgentCore-Hooks` (`before_tool_call`) directly and distinguish `AWS_DESCRIBE_ERROR` on synthetic IDs from deterministic Lambda policy blocks.
 
 ---
 
