@@ -1,36 +1,43 @@
 """
-Deploy Tether Bedrock Managed Agent and Safety Guardrail.
-Executes against AWS us-east-1 using the bedrock-janitor profile.
+Deploy Tether Bedrock Guardrail and IAM Execution Role for AgentCore.
+
+Note: AWS transitioned Bedrock Agents Classic (create_agent) into maintenance mode
+for accounts without prior usage. Tether runs on the Amazon Bedrock AgentCore
+architecture (Bedrock Runtime Converse API + Guardrails + Lambda Action Handler).
+
+Respects AWS_PROFILE and AWS_REGION environment variables.
 """
 
 import json
 import os
 import sys
 import time
-import boto3
 from botocore.exceptions import ClientError
 
-PROFILE_NAME = "bedrock-janitor"
-REGION_NAME = "us-east-1"
-AGENT_NAME = "Tether-FinOps-Agent"
-GUARDRAIL_NAME = "Tether-Safety-Guardrail"
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, ROOT_DIR)
+
+from agent.aws_config import (  # noqa: E402
+    DEFAULT_GUARDRAIL_NAME,
+    get_account_id,
+    get_aws_region,
+    get_aws_session,
+)
+
 ROLE_NAME = "Tether-Bedrock-Agent-Role"
-FOUNDATION_MODEL = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+INFERENCE_PROFILE = "us.meta.llama3-3-70b-instruct-v1:0"
 
-def get_session():
-    return boto3.Session(profile_name=PROFILE_NAME, region_name=REGION_NAME)
 
-def deploy_guardrail(bedrock_client, config_path):
-    print(f"Deploying Bedrock Guardrail: {GUARDRAIL_NAME}...")
+def deploy_guardrail(bedrock_client, config_path: str):
+    print(f"Deploying Bedrock Guardrail: {DEFAULT_GUARDRAIL_NAME}...")
     with open(config_path, "r", encoding="utf-8") as f:
         guardrail_payload = json.load(f)
 
-    # Check for existing guardrail
     existing_id = None
     paginator = bedrock_client.get_paginator("list_guardrails")
     for page in paginator.paginate():
         for item in page.get("guardrails", []):
-            if item.get("name") == GUARDRAIL_NAME:
+            if item.get("name") == DEFAULT_GUARDRAIL_NAME:
                 existing_id = item.get("id")
                 break
         if existing_id:
@@ -49,17 +56,17 @@ def deploy_guardrail(bedrock_client, config_path):
         guardrail_id = response["guardrailId"]
         guardrail_arn = response["guardrailArn"]
 
-    # Create published version for the agent
     print("Publishing Guardrail version...")
     version_resp = bedrock_client.create_guardrail_version(
         guardrailIdentifier=guardrail_id,
-        description="Version 1 for Tether FinOps Agent"
+        description="Published version for Tether AgentCore",
     )
     version = version_resp["version"]
     print(f"Guardrail ready. ID: {guardrail_id}, Version: {version}")
     return guardrail_id, version, guardrail_arn
 
-def get_or_create_agent_role(iam_client, account_id):
+
+def ensure_agent_role(iam_client, account_id: str, region: str) -> str:
     print(f"Checking IAM Role: {ROLE_NAME}...")
     trust_policy = {
         "Version": "2012-10-17",
@@ -70,134 +77,85 @@ def get_or_create_agent_role(iam_client, account_id):
                 "Action": "sts:AssumeRole",
                 "Condition": {
                     "StringEquals": {"aws:SourceAccount": account_id},
-                    "ArnLike": {"aws:SourceArn": f"arn:aws:bedrock:{REGION_NAME}:{account_id}:agent/*"}
-                }
+                    "ArnLike": {
+                        "aws:SourceArn": f"arn:aws:bedrock:{region}:{account_id}:agent/*"
+                    },
+                },
             }
-        ]
+        ],
     }
 
     try:
         role_resp = iam_client.get_role(RoleName=ROLE_NAME)
         role_arn = role_resp["Role"]["Arn"]
         print(f"Role exists: {role_arn}")
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "NoSuchEntity":
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "NoSuchEntity":
             print(f"Creating IAM Role: {ROLE_NAME}...")
             role_resp = iam_client.create_role(
                 RoleName=ROLE_NAME,
                 AssumeRolePolicyDocument=json.dumps(trust_policy),
-                Description="Execution role for Tether Bedrock Managed Agent"
+                Description="Execution role for Tether Bedrock AgentCore",
             )
             role_arn = role_resp["Role"]["Arn"]
         else:
             raise
 
-    # Attach model invocation and guardrail permissions
     policy_doc = {
         "Version": "2012-10-17",
         "Statement": [
             {
                 "Effect": "Allow",
-                "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-                "Resource": f"arn:aws:bedrock:{REGION_NAME}::foundation-model/*"
+                "Action": [
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeModelWithResponseStream",
+                ],
+                "Resource": [
+                    f"arn:aws:bedrock:{region}::foundation-model/*",
+                    f"arn:aws:bedrock:{region}:{account_id}:inference-profile/*",
+                ],
             },
             {
                 "Effect": "Allow",
                 "Action": ["bedrock:ApplyGuardrail"],
-                "Resource": f"arn:aws:bedrock:{REGION_NAME}:{account_id}:guardrail/*"
-            }
-        ]
+                "Resource": f"arn:aws:bedrock:{region}:{account_id}:guardrail/*",
+            },
+        ],
     }
 
     iam_client.put_role_policy(
         RoleName=ROLE_NAME,
         PolicyName="TetherBedrockAgentExecutionPolicy",
-        PolicyDocument=json.dumps(policy_doc)
+        PolicyDocument=json.dumps(policy_doc),
     )
-    print("IAM Role policy attached. Waiting 10s for IAM propagation...")
-    time.sleep(10)
+    print("IAM Role policy updated.")
     return role_arn
 
-def deploy_agent(bedrock_agent_client, role_arn, guardrail_id, guardrail_version, prompt_path):
-    print(f"Deploying Bedrock Agent: {AGENT_NAME}...")
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        instruction_text = f.read()
-
-    existing_agent_id = None
-    paginator = bedrock_agent_client.get_paginator("list_agents")
-    for page in paginator.paginate():
-        for agent in page.get("agentSummaries", []):
-            if agent.get("agentName") == AGENT_NAME:
-                existing_agent_id = agent.get("agentId")
-                break
-        if existing_agent_id:
-            break
-
-    guardrail_config = {
-        "guardrailIdentifier": guardrail_id,
-        "guardrailVersion": str(guardrail_version)
-    }
-
-    if existing_agent_id:
-        print(f"Updating existing Agent ({existing_agent_id})...")
-        resp = bedrock_agent_client.update_agent(
-            agentId=existing_agent_id,
-            agentName=AGENT_NAME,
-            agentResourceRoleArn=role_arn,
-            foundationModel=FOUNDATION_MODEL,
-            instruction=instruction_text,
-            guardrailConfiguration=guardrail_config
-        )
-        agent_id = resp["agent"]["agentId"]
-    else:
-        print("Creating new Bedrock Agent...")
-        resp = bedrock_agent_client.create_agent(
-            agentName=AGENT_NAME,
-            agentResourceRoleArn=role_arn,
-            foundationModel=FOUNDATION_MODEL,
-            instruction=instruction_text,
-            guardrailConfiguration=guardrail_config,
-            idleSessionTTLInSeconds=1800
-        )
-        agent_id = resp["agent"]["agentId"]
-
-    print("Preparing Agent working draft...")
-    time.sleep(3)
-    bedrock_agent_client.prepare_agent(agentId=agent_id)
-    print(f"Agent prepared successfully. Agent ID: {agent_id}")
-    return agent_id
 
 def main():
-    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    config_path = os.path.join(root_dir, "agent", "guardrail_config.json")
-    prompt_path = os.path.join(root_dir, "agent", "system_prompt.txt")
-
-    session = get_session()
-    sts_client = session.client("sts")
-    account_id = sts_client.get_caller_identity()["Account"]
-    print(f"Connected to AWS Account: {account_id} in {REGION_NAME}")
+    config_path = os.path.join(ROOT_DIR, "agent", "guardrail_config.json")
+    region = get_aws_region()
+    session = get_aws_session()
+    account_id = get_account_id(session)
+    print(f"Connected to AWS Account: {account_id} in {region}")
 
     bedrock_client = session.client("bedrock")
-    bedrock_agent_client = session.client("bedrock-agent")
     iam_client = session.client("iam")
 
-    # Step 1: Deploy Guardrail
-    guardrail_id, guardrail_version, _ = deploy_guardrail(bedrock_client, config_path)
-
-    # Step 2: Ensure Agent Execution IAM Role
-    role_arn = get_or_create_agent_role(iam_client, account_id)
-
-    # Step 3: Deploy Agent with Guardrail Association
-    agent_id = deploy_agent(bedrock_agent_client, role_arn, guardrail_id, guardrail_version, prompt_path)
+    guardrail_id, guardrail_version, guardrail_arn = deploy_guardrail(
+        bedrock_client, config_path
+    )
+    role_arn = ensure_agent_role(iam_client, account_id, region)
 
     print("\n" + "=" * 60)
-    print("DEPLOYMENT COMPLETE")
-    print(f"Agent Name:        {AGENT_NAME}")
-    print(f"Agent ID:          {agent_id}")
-    print(f"Foundation Model:  {FOUNDATION_MODEL}")
+    print("LAYER 1 & LAYER 2 PROVISIONING COMPLETE")
+    print(f"Guardrail Name:    {DEFAULT_GUARDRAIL_NAME}")
     print(f"Guardrail ID:      {guardrail_id} (Version {guardrail_version})")
+    print(f"Guardrail ARN:     {guardrail_arn}")
     print(f"IAM Role ARN:      {role_arn}")
+    print(f"Inference Profile: {INFERENCE_PROFILE}")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     main()

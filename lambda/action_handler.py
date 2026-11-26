@@ -2,12 +2,15 @@
 Tether Lambda Action Handler.
 
 Implements Layer 3 runtime boundary enforcement for the Tether FinOps agent.
-Supports both Bedrock AgentCore tool invocation payloads and OpenAPI Action Group events.
+Supports:
+  1. Amazon Bedrock AgentCore Gateway MCP Lambda invocations
+  2. Direct tool payloads: {"tool": "<name>", "input": {...}}
+  3. OpenAPI Action Group events: {"apiPath": "...", "parameters": [...]}
 """
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import boto3
 from botocore.exceptions import ClientError
@@ -87,7 +90,7 @@ def _is_eligible_dev_tags(tags: Dict[str, str]) -> bool:
 
 
 def audit_waste() -> Dict[str, Any]:
-    """List running EC2 instances and classify cleanup eligibility."""
+    """List EC2 instances and classify cleanup eligibility."""
     ec2 = _get_ec2_client()
     if ec2 is None:
         results = []
@@ -136,7 +139,6 @@ def audit_waste() -> Dict[str, Any]:
 
 def stop_dev_instances(
     instance_ids: List[str],
-    confirmation_token: Optional[str] = None,
     action_mode: str = "stop",
 ) -> Dict[str, Any]:
     """
@@ -175,7 +177,7 @@ def stop_dev_instances(
             "code": "BLAST_RADIUS_EXCEEDED",
             "message": (
                 f"Boundary violation: maximum {MAX_BLAST_RADIUS} instances can be stopped per execution "
-                f"(requested {len(unique_ids)}). Present the full inventory and request human approval."
+                f"(requested {len(unique_ids)})."
             ),
             "requested_count": len(unique_ids),
             "max_allowed": MAX_BLAST_RADIUS,
@@ -208,7 +210,6 @@ def stop_dev_instances(
             "mode": "mock",
             "action": "STOPPED",
             "instances": unique_ids,
-            "confirmation_token_used": bool(confirmation_token),
             "message": f"Stopped {len(unique_ids)} development instance(s).",
         }
 
@@ -284,15 +285,38 @@ def _parse_instance_ids(raw_ids: Any) -> List[str]:
     return []
 
 
+def _extract_gateway_tool_name(context: Any) -> str:
+    """Extract tool name from AgentCore Gateway Lambda client_context if present."""
+    client_ctx = getattr(context, "client_context", None)
+    custom = getattr(client_ctx, "custom", None) or {}
+    full_name = custom.get("bedrockAgentCoreToolName", "")
+    if "___" in full_name:
+        return full_name.split("___", 1)[1]
+    return full_name
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Entrypoint for AWS Lambda.
 
     Handles:
-    1. Direct AgentCore invocations: {"tool": "<name>", "input": {...}}
-    2. Bedrock OpenAPI Action Group invocations: {"apiPath": "...", "parameters": [...]}
+    1. AgentCore Gateway MCP Lambda calls (tool name in client_context.custom)
+    2. Direct tool invocations: {"tool": "<name>", "input": {...}}
+    3. OpenAPI Action Group invocations: {"apiPath": "...", "parameters": [...]}
     """
-    # Path 1: Direct AgentCore tool invocation
+    gateway_tool = _extract_gateway_tool_name(context)
+    if gateway_tool == "audit_waste" or (
+        "tool" not in event and "apiPath" not in event and "instance_ids" not in event and not gateway_tool
+    ):
+        return audit_waste()
+
+    if gateway_tool == "stop_dev_instances" or (
+        "tool" not in event and "apiPath" not in event and "instance_ids" in event
+    ):
+        ids = _parse_instance_ids(event.get("instance_ids", []))
+        mode = event.get("mode", "stop")
+        return stop_dev_instances(ids, action_mode=mode)
+
     if "tool" in event:
         tool_name = event["tool"]
         tool_input = event.get("input", {}) or {}
@@ -300,12 +324,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             return audit_waste()
         if tool_name == "stop_dev_instances":
             ids = _parse_instance_ids(tool_input.get("instance_ids", []))
-            token = tool_input.get("confirmation_token")
             mode = tool_input.get("mode", "stop")
-            return stop_dev_instances(ids, confirmation_token=token, action_mode=mode)
+            return stop_dev_instances(ids, action_mode=mode)
         return {"status": "error", "code": "UNKNOWN_TOOL", "message": f"Unknown tool: {tool_name}"}
 
-    # Path 2: OpenAPI Action Group invocation
     action_group = event.get("actionGroup", "")
     api_path = event.get("apiPath", "")
     http_method = event.get("httpMethod", "")
@@ -316,9 +338,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         result = audit_waste()
     elif api_path == "/stop-dev-instances":
         ids = _parse_instance_ids(param_dict.get("instance_ids", []))
-        token = param_dict.get("confirmation_token")
         mode = param_dict.get("mode", "stop")
-        result = stop_dev_instances(ids, confirmation_token=token, action_mode=mode)
+        result = stop_dev_instances(ids, action_mode=mode)
     else:
         result = {"status": "error", "code": "UNKNOWN_ENDPOINT", "message": f"Unknown path: {api_path}"}
 
