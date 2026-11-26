@@ -9,6 +9,10 @@ Reference: Issue #1 (https://github.com/primegideon/tether/issues/1)
 
 The system runs on AWS in region `us-east-1` using the **Amazon Bedrock AgentCore Managed Harness** (`Tether_Managed_Harness`):
 
+![Tether 3-Layer AWS AgentCore Architecture](tether-architecture.gif)
+
+*(Static exports: [PNG](tether-architecture.png) · [SVG](tether-architecture.svg))*
+
 ```mermaid
 flowchart TD
     User([User or External System]) -->|Input| L1Hook[Layer 1: beforeInvocation Hook -> Bedrock Guardrail]

@@ -51,31 +51,11 @@ The agent operates under non-negotiable boundaries to prevent accidental modific
 
 Tether deploys directly on the **Amazon Bedrock AgentCore Managed Harness** (`Tether_Managed_Harness`) with three independent enforcement layers:
 
-```text
-[ User Input ]
-      |
-      v
-[ Layer 1: AgentCore beforeInvocation Hook -> Bedrock Guardrail (Tether-Safety-Guardrail) ]
-  - Evaluates input against Prompt Attack filter (HIGH), Denied Topics, and AWS Key regex.
-  - Halts invocation immediately (stopReason: hook_stopped) if Guardrail intervenes.
-      |
-      v (Allowed inputs only)
-[ Layer 2: AgentCore Managed Harness + beforeToolCall Hook ]
-  - Managed LLM reasoning bounded by system prompt contract.
-  - MCP Gateway (Tether-FinOps-Gateway) exposes only audit_waste and stop_dev_instances.
-  - beforeToolCall hook enforces tool allowlist, mode='stop', and max 3 targets before execution.
-      |
-      v (Validated tool calls only)
-[ Layer 3: AWS Lambda (Tether-Action-Handler) & Scoped IAM Role ]
-  - Verifies running state and 24h CloudWatch CPUUtilization < 5.0% during audits.
-  - Re-validates blast radius (<= 3) and resource Environment/Owner tags via EC2 DescribeInstances.
-  - IAM Policy Condition: aws:ResourceTag/Environment = Development (or Owner = DevSandbox).
-  - IAM Explicit Deny: ec2:TerminateInstances, ec2:DeleteVolume, rds:Delete*, Protected=True.
-      |
-      v
-[ Layer 1 Output Check: AgentCore afterInvocation Hook -> Bedrock Guardrail ]
-  - Scans assistant output before returning to user.
-```
+![Tether 3-Layer AWS AgentCore Architecture](architecture/tether-architecture.gif)
+
+1. **Layer 1 (`before_invocation` & `after_invocation` Hooks -> `Tether-Safety-Guardrail` v2):** Evaluates inputs and outputs against Prompt Attack (`HIGH`), `PrivilegeEscalationAndBypass`, and AWS Access Key regex rules, stopping violations (`hook_stopped`) before the LLM runs.
+2. **Layer 2 (`Tether_Managed_Harness` + `before_tool_call` Hook):** Bounds LLM reasoning via `agent/system_prompt.txt`, exposes only `audit_waste` and `stop_dev_instances` on `Tether-FinOps-Gateway`, and deterministically enforces tool allowlist, `mode == "stop"`, and max 3 targets.
+3. **Layer 3 (`Tether-Action-Handler` Lambda + Scoped IAM):** Checks EC2 `running` state and 24h CloudWatch `CPUUtilization < 5.0%`, re-validates blast radius (`<= 3`) and `Development` / `DevSandbox` tags, and relies on IAM explicit denies for `ec2:TerminateInstances`, `ec2:DeleteVolume`, `rds:Delete*`, and `s3:DeleteBucket`.
 
 ---
 

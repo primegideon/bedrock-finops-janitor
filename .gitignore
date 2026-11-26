@@ -24,3 +24,7 @@ Thumbs.db
 
 # Playwright MCP cache
 .playwright-mcp/
+
+# Local full-length demo recordings (kept locally, not pushed)
+*.webm
+
